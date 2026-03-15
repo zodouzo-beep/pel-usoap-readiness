@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PEL-USOAP Readiness — DGAC Tunisie</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#F3F4F6;color:#333}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px}
+input:focus,select:focus,textarea:focus{border-color:rgba(27,42,74,.5)!important;box-shadow:0 0 0 2px rgba(27,42,74,.12);outline:none}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.1/umd/lucide.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useMemo}=React;
+
+// Icons
+const Icon=({name,size=18,color="#333",style={}})=>{
+  const ref=React.useRef(null);
+  useEffect(()=>{
+    if(ref.current){
+      ref.current.innerHTML='';
+      try{
+        const svg=lucide.createElement(lucide.icons[name]);
+        svg.setAttribute('width',size);
+        svg.setAttribute('height',size);
+        svg.setAttribute('color',color);
+        Object.assign(svg.style,style);
+        ref.current.appendChild(svg);
+      }catch(e){}
+    }
+  },[name,size,color]);
+  return <span ref={ref} style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:size,height:size,...style}}/>;
+};
+
+// Supabase REST client
+const createClient=(url,key)=>{
+  const h={apikey:key,Authorization:`Bearer ${key}`,"Content-Type":"application/json",Prefer:"return=representation"};
+  const req=async(path,opts={})=>{
+    const r=await fetch(`${url}/rest/v1/${path}`,{...opts,headers:{...h,...opts.headers}});
+    if(!r.ok){const e=await r.text();throw new Error(`${r.status}: ${e}`);}
+    const t=await r.text();return t?JSON.parse(t):null;
+  };
+  return{
+    from:(t)=>({
+      select:(c="*",o={})=>({run:()=>req(`${t}?select=${c}${o.filter||""}${o.order?`&order=${o.order}`:""}`)}),
+      insert:(d)=>req(t,{method:"POST",body:JSON.stringify(Array.isArray(d)?d:[d])}),
+      update:(d,col,val)=>req(`${t}?${col}=eq.${val}`,{method:"PATCH",body:JSON.stringify(d)}),
+      del:(col,val)=>req(`${t}?${col}=eq.${val}`,{method:"DELETE"}),
+    }),
+    rpc:(fn,p={})=>req(`rpc/${fn}`,{method:"POST",body:JSON.stringify(p)}),
+  };
+};
+
+const NAVY="#1B2A4A",GOLD="#C8A951";
+const CE_LABELS={"CE-1":"Legislation primaire","CE-2":"Reglements specifiques","CE-3":"Systeme et fonctions","CE-4":"Personnel technique qualifie","CE-5":"Guides, procedures, outils","CE-6":"Obligations de licences","CE-7":"Obligations de surveillance","CE-8":"Resolution problemes securite"};
+const RISK_COL={CRITIQUE:"#DC2626",ELEVE:"#EA580C",MODERE:"#CA8A04",FAIBLE:"#16A34A"};
+const STAT_COL={NON_TRAITE:"#9CA3AF",EN_COURS:"#3B82F6",REVUE_INTERNE:"#8B5CF6",AUDIT_READY:"#16A34A",BLOQUE:"#DC2626"};
+const PRIO_COL={CRITIQUE:"#DC2626",HAUTE:"#EA580C",NORMALE:"#3B82F6",BASSE:"#9CA3AF"};
+const SEV_COL={BLOQUANT:"#DC2626",MAJEUR:"#EA580C",MINEUR:"#CA8A04",OBSERVATION:"#6B7280"};
+
+const TABS=[
+  {id:"dashboard",label:"Cockpit",icon:"bar-chart-3"},
+  {id:"pq_list",label:"Protocol Questions",icon:"file-text"},
+  {id:"mappings_reg",label:"Matrice Reglementaire",icon:"book-open"},
+  {id:"mappings_proc",label:"Matrice Procedurale",icon:"clipboard"},
+  {id:"preuves",label:"Preuves",icon:"folder-open"},
+  {id:"findings",label:"Findings",icon:"alert-triangle"},
+  {id:"capa",label:"CAPA",icon:"target"},
+  {id:"inspecteurs",label:"Inspecteurs",icon:"users"},
+  {id:"settings",label:"Configuration",icon:"settings"},
+];
+
+const Badge=({text,color,small})=>(
+  <span style={{background:`${color}18`,color,border:`1px solid ${color}40`,padding:small?"1px 6px":"2px 10px",borderRadius:4,fontSize:small?10:11,fontWeight:600,letterSpacing:.5,textTransform:"uppercase",whiteSpace:"nowrap"}}>{text}</span>
+);
+
+const ScoreBar=({score,h=8})=>{
+  const c=score>=90?"#16A34A":score>=70?"#CA8A04":score>=50?"#EA580C":"#DC2626";
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:8,width:"100%"}}>
+      <div style={{flex:1,height:h,background:"#E5E7EB",borderRadius:h/2,overflow:"hidden"}}>
+        <div style={{width:`${Math.min(100,Math.max(0,score))}%`,height:"100%",background:c,borderRadius:h/2,transition:"width .5s"}}/>
+      </div>
+      <span style={{fontSize:12,fontWeight:700,color:c,minWidth:36,textAlign:"right"}}>{score?.toFixed?.(1)??"—"}</span>
+    </div>
+  );
+};
+
+const StatCard=({icon,label,value,color=NAVY,sub})=>(
+  <div style={{background:"white",borderRadius:8,padding:"18px 20px",border:"1px solid #E5E7EB",display:"flex",alignItems:"center",gap:14,boxShadow:"0 1px 3px rgba(0,0,0,.04)"}}>
+    <div style={{width:42,height:42,borderRadius:8,background:`${color}12`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <Icon name={icon} size={20} color={color}/>
+    </div>
+    <div>
+      <div style={{fontSize:22,fontWeight:700,color:NAVY,lineHeight:1.1}}>{value}</div>
+      <div style={{fontSize:11,color:"#6B7280",textTransform:"uppercase",letterSpacing:.5,fontWeight:500}}>{label}</div>
+    </div>
+  </div>
+);
+
+const Modal=({title,children,onClose})=>(
+  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{background:"white",borderRadius:10,width:700,maxHeight:"85vh",overflow:"auto",boxShadow:"0 25px 50px rgba(0,0,0,.25)"}}>
+      <div style={{padding:"16px 24px",borderBottom:"1px solid #E5E7EB",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,background:"white",zIndex:1,borderRadius:"10px 10px 0 0"}}>
+        <h3 style={{margin:0,fontSize:16,color:NAVY,fontWeight:700}}>{title}</h3>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",padding:4}}><Icon name="x" size={18} color="#6B7280"/></button>
+      </div>
+      <div style={{padding:24}}>{children}</div>
+    </div>
+  </div>
+);
+
+const Field=({label,children,req})=>(
+  <div style={{marginBottom:14}}>
+    <label style={{display:"block",fontSize:12,fontWeight:600,color:"#374151",marginBottom:4}}>{label} {req&&<span style={{color:"#DC2626"}}>*</span>}</label>
+    {children}
+  </div>
+);
+
+const iS={width:"100%",padding:"8px 12px",border:"1px solid #D1D5DB",borderRadius:6,fontSize:13,outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
+const sS={...iS,background:"white"};
+const bP={background:NAVY,color:"white",border:"none",borderRadius:6,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6};
+const bS={background:"white",color:NAVY,border:`1px solid ${NAVY}40`,borderRadius:6,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6};
+
+// ═══ MAIN APP ═══
+function App(){
+  const [config,setConfig]=useState(()=>{try{const s=localStorage.getItem('pel_config');return s?JSON.parse(s):null;}catch{return null;}});
+  const [ci,setCi]=useState({url:"",key:""});
+  const [tab,setTab]=useState("dashboard");
+  const [db,setDb]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [error,setError]=useState(null);
+  const [sc,setSc]=useState(false);
+
+  const [stats,setStats]=useState(null);
+  const [ceStats,setCeStats]=useState([]);
+  const [pqList,setPqList]=useState([]);
+  const [selPQ,setSelPQ]=useState(null);
+  const [mReg,setMReg]=useState([]);
+  const [mProc,setMProc]=useState([]);
+  const [prvs,setPrvs]=useState([]);
+  const [pqP,setPqP]=useState([]);
+  const [finds,setFinds]=useState([]);
+  const [caps,setCaps]=useState([]);
+  const [insps,setInsps]=useState([]);
+  const [forms,setForms]=useState([]);
+  const [interps,setInterps]=useState([]);
+  const [modal,setModal]=useState(null);
+  const [filters,setFilters]=useState({ce:"",priorite:"",statut:"",search:""});
+
+  const connect=useCallback(()=>{
+    if(!ci.url||!ci.key)return;
+    const c={url:ci.url.replace(/\/$/,""),key:ci.key};
+    localStorage.setItem('pel_config',JSON.stringify(c));
+    setConfig(c);setDb(createClient(c.url,c.key));
+  },[ci]);
+
+  useEffect(()=>{if(config)setDb(createClient(config.url,config.key));},[config]);
+
+  const loadAll=useCallback(async()=>{
+    if(!db)return;setLoading(true);setError(null);
+    try{
+      const [st,ce,pqs,mr,mp,pr,pp,fi,ca,ins,fo,it]=await Promise.all([
+        db.from("v_dashboard_stats").select().run(),
+        db.from("v_stats_par_ce").select().run(),
+        db.from("v_fiche_pq").select().run(),
+        db.from("pq_mapping_reglementaire").select().run(),
+        db.from("pq_mapping_procedural").select().run(),
+        db.from("preuves").select("*",{filter:"&deleted_at=is.null"}).run(),
+        db.from("pq_preuves").select().run(),
+        db.from("findings").select().run(),
+        db.from("capa").select().run(),
+        db.from("inspecteurs").select().run(),
+        db.from("formations_inspecteurs").select().run(),
+        db.from("pq_interpretation").select().run(),
+      ]);
+      setStats(st?.[0]||null);setCeStats(ce||[]);setPqList(pqs||[]);
+      setMReg(mr||[]);setMProc(mp||[]);setPrvs(pr||[]);setPqP(pp||[]);
+      setFinds(fi||[]);setCaps(ca||[]);setInsps(ins||[]);setForms(fo||[]);setInterps(it||[]);
+    }catch(e){setError(e.message);}finally{setLoading(false);}
+  },[db]);
+
+  useEffect(()=>{if(db)loadAll();},[db,loadAll]);
+
+  const recompute=async()=>{
+    if(!db)return;setLoading(true);
+    try{await db.rpc("recompute_all_readiness");await loadAll();}
+    catch(e){setError(e.message);}finally{setLoading(false);}
+  };
+
+  const fPQs=useMemo(()=>pqList.filter(pq=>{
+    if(filters.ce&&pq.ce_principal!==filters.ce)return false;
+    if(filters.priorite&&pq.priorite!==filters.priorite)return false;
+    if(filters.statut&&pq.statut_readiness!==filters.statut)return false;
+    if(filters.search){const s=filters.search.toLowerCase();if(!pq.pq_code.toLowerCase().includes(s)&&!(pq.libelle_fr||"").toLowerCase().includes(s)&&!(pq.libelle_en||"").toLowerCase().includes(s))return false;}
+    return true;
+  }),[pqList,filters]);
+
+  // ─── Config Screen ───
+  if(!config){
+    return(
+      <div style={{minHeight:"100vh",background:`linear-gradient(135deg,${NAVY} 0%,#2D4A7A 100%)`,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"white",borderRadius:12,padding:40,width:440,boxShadow:"0 25px 50px rgba(0,0,0,.3)"}}>
+          <div style={{textAlign:"center",marginBottom:30}}>
+            <div style={{width:56,height:56,borderRadius:12,background:`${NAVY}12`,display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:12}}>
+              <Icon name="shield" size={28} color={NAVY}/>
+            </div>
+            <h1 style={{margin:0,fontSize:20,color:NAVY,fontWeight:700}}>PEL-USOAP Readiness</h1>
+            <p style={{margin:"6px 0 0",color:"#6B7280",fontSize:13}}>DGAC Tunisie — Systeme de conformite PEL</p>
+          </div>
+          <Field label="URL Supabase" req><input style={iS} placeholder="https://xxx.supabase.co" value={ci.url} onChange={e=>setCi(p=>({...p,url:e.target.value}))}/></Field>
+          <Field label="Cle anon" req><input style={iS} type="password" placeholder="eyJhbGci..." value={ci.key} onChange={e=>setCi(p=>({...p,key:e.target.value}))}/></Field>
+          <button onClick={connect} style={{...bP,width:"100%",justifyContent:"center",padding:"10px 20px",marginTop:8}} disabled={!ci.url||!ci.key}>
+            <Icon name="lock" size={14} color="white"/> Connecter
+          </button>
+          <p style={{fontSize:11,color:"#9CA3AF",textAlign:"center",marginTop:16}}>Identifiants stockes localement (localStorage)</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Main Layout ───
+  return(
+    <div style={{display:"flex",minHeight:"100vh"}}>
+      {/* Sidebar */}
+      <div style={{width:sc?60:240,background:NAVY,color:"white",transition:"width .2s",display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
+        <div style={{padding:sc?"16px 8px":"16px 20px",borderBottom:"1px solid rgba(255,255,255,.1)",display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setSc(!sc)}>
+          <Icon name="shield" size={22} color={GOLD}/>
+          {!sc&&<div><div style={{fontSize:13,fontWeight:700,letterSpacing:.5}}>PEL-USOAP</div><div style={{fontSize:10,opacity:.6}}>DGAC Tunisie</div></div>}
+        </div>
+        <nav style={{flex:1,padding:"8px 0"}}>
+          {TABS.map(t=>(
+            <div key={t.id} onClick={()=>{setTab(t.id);setSelPQ(null);}} style={{padding:sc?"10px 0":"10px 20px",display:"flex",alignItems:"center",gap:10,cursor:"pointer",background:tab===t.id?"rgba(255,255,255,.12)":"transparent",borderLeft:tab===t.id?`3px solid ${GOLD}`:"3px solid transparent",transition:"all .15s",justifyContent:sc?"center":"flex-start"}} title={t.label}>
+              <Icon name={t.icon} size={18} color={tab===t.id?GOLD:"rgba(255,255,255,.6)"}/>
+              {!sc&&<span style={{fontSize:13,fontWeight:tab===t.id?600:400,opacity:tab===t.id?1:.7}}>{t.label}</span>}
+            </div>
+          ))}
+        </nav>
+        {!sc&&<div style={{padding:"12px 20px",borderTop:"1px solid rgba(255,255,255,.1)",fontSize:10,opacity:.4}}>v1.0 — Mars 2026</div>}
+      </div>
+
+      {/* Main */}
+      <div style={{flex:1,overflow:"auto",background:"#F3F4F6"}}>
+        {/* Top bar */}
+        <div style={{background:"white",borderBottom:"1px solid #E5E7EB",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100}}>
+          <div style={{display:"flex",alignItems:"center",gap:12}}>
+            {selPQ&&<button onClick={()=>setSelPQ(null)} style={{...bS,padding:"6px 12px"}}><Icon name="arrow-left" size={14} color={NAVY}/> Retour</button>}
+            <h2 style={{margin:0,fontSize:16,color:NAVY,fontWeight:700}}>{selPQ?`Fiche PQ — ${selPQ.pq_code}`:TABS.find(t=>t.id===tab)?.label}</h2>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {loading&&<Icon name="refresh-cw" size={16} color={NAVY} style={{animation:"spin 1s linear infinite"}}/>}
+            {error&&<span style={{fontSize:11,color:"#DC2626",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{error}</span>}
+            <button onClick={loadAll} style={{...bS,padding:"6px 12px"}}><Icon name="refresh-cw" size={14} color={NAVY}/> Actualiser</button>
+            <button onClick={recompute} style={{...bP,padding:"6px 12px"}}><Icon name="activity" size={14} color="white"/> Scores</button>
+          </div>
+        </div>
+
+        <div style={{padding:24}}>
+          {selPQ?<FichePQ pq={selPQ} mReg={mReg} mProc={mProc} prvs={prvs} pqP={pqP} finds={finds} caps={caps} interps={interps} db={db} reload={loadAll} setModal={setModal}/>:
+          tab==="dashboard"?<Dashboard s={stats} ce={ceStats} pqs={pqList} fi={finds} ca={caps} onPQ={pq=>{setSelPQ(pq);setTab("pq_list");}}/>:
+          tab==="pq_list"?<PQList pqs={fPQs} filters={filters} setFilters={setFilters} onSel={setSelPQ}/>:
+          tab==="mappings_reg"?<DataTable data={mReg} cols={[{k:"pq_id",l:"PQ",f:v=>pqList.find(p=>p.id===v)?.pq_code||"—"},{k:"texte_ref",l:"Texte"},{k:"articles_couverts",l:"Articles"},{k:"niveau_couverture",l:"Couverture",f:v=><Badge text={v} color={v==="TOTALE"?"#16A34A":v==="PARTIELLE"?"#CA8A04":"#DC2626"} small/>},{k:"statut_validation",l:"Validation",f:v=><Badge text={v} color={v==="VALIDE"?"#16A34A":"#6B7280"} small/>}]} empty="Aucun mapping reglementaire"/>:
+          tab==="mappings_proc"?<DataTable data={mProc} cols={[{k:"pq_id",l:"PQ",f:v=>pqList.find(p=>p.id===v)?.pq_code||"—"},{k:"doc_reference",l:"Reference"},{k:"doc_type",l:"Type",f:v=><Badge text={v} color={NAVY} small/>},{k:"doc_titre",l:"Titre",w:250},{k:"doc_statut",l:"Statut",f:v=><Badge text={v} color={v==="APPROUVE"?"#16A34A":"#CA8A04"} small/>}]} empty="Aucun mapping procedural"/>:
+          tab==="preuves"?<DataTable data={prvs} cols={[{k:"code_preuve",l:"Code"},{k:"titre",l:"Titre",w:200},{k:"type_preuve",l:"Type",f:v=><Badge text={v} color={NAVY} small/>},{k:"date_document",l:"Date"},{k:"statut",l:"Statut",f:v=><Badge text={v} color={v==="VALIDEE"?"#16A34A":v==="EXPIREE"?"#DC2626":"#CA8A04"} small/>},{k:"is_surveillance",l:"Surv.",f:v=>v?"OUI":"—"}]} empty="Aucune preuve"/>:
+          tab==="findings"?<DataTable data={finds} cols={[{k:"code_finding",l:"Code"},{k:"pq_id",l:"PQ",f:v=>pqList.find(p=>p.id===v)?.pq_code||"—"},{k:"ce_concerne",l:"CE"},{k:"severite",l:"Severite",f:v=><Badge text={v} color={SEV_COL[v]} small/>},{k:"type_finding",l:"Type",f:v=><Badge text={v?.replace(/_/g," ")} color={NAVY} small/>},{k:"statut",l:"Statut",f:v=><Badge text={v} color={v==="CLOS"?"#16A34A":v==="OUVERT"?"#DC2626":"#CA8A04"} small/>},{k:"detecte_le",l:"Date"}]} empty="Aucun finding"/>:
+          tab==="capa"?<DataTable data={caps} cols={[{k:"code_capa",l:"Code"},{k:"finding_id",l:"Finding",f:v=>finds.find(f=>f.id===v)?.code_finding||"—"},{k:"type_capa",l:"Type",f:v=><Badge text={v} color={NAVY} small/>},{k:"statut",l:"Statut",f:v=><Badge text={v} color={v==="CLOS"||v==="VALIDE"?"#16A34A":v==="EN_RETARD"?"#DC2626":"#CA8A04"} small/>},{k:"echeance",l:"Echeance"},{k:"action_structurelle",l:"Action",w:200}]} empty="Aucun CAPA"/>:
+          tab==="inspecteurs"?<InspecteursView insps={insps} forms={forms} db={db} reload={loadAll} setModal={setModal}/>:
+          tab==="settings"?<SettingsView config={config} setConfig={setConfig}/>:null}
+        </div>
+      </div>
+      {modal&&<Modal title={modal.title} onClose={()=>setModal(null)}>{modal.content}</Modal>}
+    </div>
+  );
+}
+
+// ═══ Generic Table ═══
+function DataTable({data,cols,empty}){
+  return(
+    <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",overflow:"hidden"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+        <thead><tr style={{background:NAVY}}>
+          {cols.map(c=><th key={c.k} style={{padding:"10px 12px",textAlign:"left",color:"white",fontWeight:600,fontSize:11,textTransform:"uppercase",letterSpacing:.5}}>{c.l}</th>)}
+        </tr></thead>
+        <tbody>
+          {data.map((r,i)=>(
+            <tr key={r.id||i} style={{background:i%2?"#FAFAFA":"white",borderBottom:"1px solid #F3F4F6"}}>
+              {cols.map(c=><td key={c.k} style={{padding:"8px 12px",maxWidth:c.w||200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.f?c.f(r[c.k]):String(r[c.k]||"—").substring(0,60)}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.length===0&&<div style={{padding:40,textAlign:"center",color:"#9CA3AF"}}>{empty}</div>}
+    </div>
+  );
+}
+
+// ═══ DASHBOARD ═══
+function Dashboard({s,ce,pqs,fi,ca,onPQ}){
+  if(!s)return<div style={{textAlign:"center",padding:60,color:"#9CA3AF"}}>Chargement...</div>;
+  const critPQs=pqs.filter(p=>p.niveau_risque==="CRITIQUE").slice(0,8);
+  const openF=fi.filter(f=>f.statut==="OUVERT"||f.statut==="EN_TRAITEMENT");
+  const lateC=ca.filter(c=>c.statut==="EN_RETARD");
+  return(
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14,marginBottom:24}}>
+        <StatCard icon="file-text" label="Total PQ" value={s.total_pq}/>
+        <StatCard icon="check-circle-2" label="Audit Ready" value={s.pq_audit_ready} color="#16A34A"/>
+        <StatCard icon="clock" label="En cours" value={s.pq_en_cours} color="#3B82F6"/>
+        <StatCard icon="x-circle" label="Bloques" value={s.pq_bloque} color="#DC2626"/>
+        <StatCard icon="alert-triangle" label="Findings ouverts" value={s.findings_ouverts} color="#EA580C"/>
+        <StatCard icon="target" label="CAPA retard" value={s.capa_en_retard} color="#DC2626"/>
+        <StatCard icon="file-check" label="Preuves validees" value={s.preuves_validees} color="#16A34A"/>
+        <StatCard icon="trending-up" label="Score moyen" value={`${s.score_moyen}%`} color={s.score_moyen>=70?"#16A34A":"#EA580C"}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+        <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20}}>
+          <h3 style={{margin:"0 0 16px",fontSize:14,color:NAVY,fontWeight:700}}><Icon name="layers" size={16} color={NAVY}/> Scores par CE</h3>
+          {ce.map(c=>(
+            <div key={c.ce_principal} style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{fontSize:12,fontWeight:600,color:NAVY}}>{c.ce_principal}</span>
+                <span style={{fontSize:11,color:"#6B7280"}}>{CE_LABELS[c.ce_principal]}</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <ScoreBar score={parseFloat(c.score_moyen)} h={6}/>
+                <span style={{fontSize:10,color:"#9CA3AF",whiteSpace:"nowrap"}}>{c.pq_ready}/{c.total_pq}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20}}>
+          <h3 style={{margin:"0 0 16px",fontSize:14,color:NAVY,fontWeight:700}}><Icon name="alert-circle" size={16} color="#DC2626"/> PQ critiques</h3>
+          {critPQs.length===0?<p style={{color:"#16A34A",fontSize:13,textAlign:"center",padding:20}}>Aucun PQ critique</p>:
+          critPQs.map(pq=>(
+            <div key={pq.id} onClick={()=>onPQ(pq)} style={{padding:"8px 12px",borderRadius:6,marginBottom:6,cursor:"pointer",border:"1px solid #FEE2E2",background:"#FEF2F2",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div><span style={{fontSize:12,fontWeight:700,color:NAVY}}>{pq.pq_code}</span><span style={{fontSize:11,color:"#6B7280",marginLeft:8}}>{(pq.libelle_fr||pq.libelle_en||"").substring(0,50)}...</span></div>
+              <Badge text={`${pq.score_global??0}%`} color="#DC2626" small/>
+            </div>
+          ))}
+        </div>
+        <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20}}>
+          <h3 style={{margin:"0 0 16px",fontSize:14,color:NAVY,fontWeight:700}}>Findings ouverts ({openF.length})</h3>
+          {openF.slice(0,6).map(f=>(<div key={f.id} style={{padding:"6px 0",borderBottom:"1px solid #F3F4F6",display:"flex",justifyContent:"space-between"}}><div style={{display:"flex",gap:8}}><Badge text={f.severite} color={SEV_COL[f.severite]} small/><span style={{fontSize:12}}>{f.code_finding}</span></div><span style={{fontSize:11,color:"#6B7280"}}>{f.ce_concerne}</span></div>))}
+          {openF.length===0&&<p style={{color:"#9CA3AF",fontSize:13,textAlign:"center"}}>Aucun</p>}
+        </div>
+        <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20}}>
+          <h3 style={{margin:"0 0 16px",fontSize:14,color:NAVY,fontWeight:700}}>CAPA en retard ({lateC.length})</h3>
+          {lateC.slice(0,6).map(c=>(<div key={c.id} style={{padding:"6px 0",borderBottom:"1px solid #F3F4F6",display:"flex",justifyContent:"space-between"}}><span style={{fontSize:12,fontWeight:600}}>{c.code_capa}</span><span style={{fontSize:11,color:"#DC2626"}}>Ech: {c.echeance}</span></div>))}
+          {lateC.length===0&&<p style={{color:"#16A34A",fontSize:13,textAlign:"center"}}>Aucun</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══ PQ LIST ═══
+function PQList({pqs,filters,setFilters,onSel}){
+  return(
+    <div>
+      <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:"12px 16px",marginBottom:16,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:200}}>
+          <Icon name="search" size={14} color="#9CA3AF"/>
+          <input style={{...iS,border:"none",padding:"4px 8px"}} placeholder="Rechercher PQ..." value={filters.search} onChange={e=>setFilters(f=>({...f,search:e.target.value}))}/>
+        </div>
+        <select style={{...sS,width:120,padding:"6px 8px"}} value={filters.ce} onChange={e=>setFilters(f=>({...f,ce:e.target.value}))}>
+          <option value="">Tous CE</option>{Object.keys(CE_LABELS).map(ce=><option key={ce} value={ce}>{ce}</option>)}
+        </select>
+        <select style={{...sS,width:120,padding:"6px 8px"}} value={filters.priorite} onChange={e=>setFilters(f=>({...f,priorite:e.target.value}))}>
+          <option value="">Priorite</option>{["CRITIQUE","HAUTE","NORMALE","BASSE"].map(p=><option key={p} value={p}>{p}</option>)}
+        </select>
+        <select style={{...sS,width:140,padding:"6px 8px"}} value={filters.statut} onChange={e=>setFilters(f=>({...f,statut:e.target.value}))}>
+          <option value="">Statut</option>{["NON_TRAITE","EN_COURS","REVUE_INTERNE","AUDIT_READY","BLOQUE"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}
+        </select>
+        <span style={{fontSize:11,color:"#9CA3AF"}}>{pqs.length} PQ</span>
+      </div>
+      <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",overflow:"hidden"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr style={{background:NAVY}}>
+            {["Code","CE","Libelle","Priorite","Statut","Score","Risque","Prv","Fnd"].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",color:"white",fontWeight:600,fontSize:11}}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {pqs.map((pq,i)=>(
+              <tr key={pq.id} onClick={()=>onSel(pq)} style={{cursor:"pointer",background:i%2?"#FAFAFA":"white",borderBottom:"1px solid #F3F4F6"}}
+                onMouseEnter={e=>e.currentTarget.style.background=`${GOLD}15`} onMouseLeave={e=>e.currentTarget.style.background=i%2?"#FAFAFA":"white"}>
+                <td style={{padding:"10px 12px",fontWeight:700,color:NAVY}}>{pq.pq_code}</td>
+                <td style={{padding:"10px 12px"}}><Badge text={pq.ce_principal} color={NAVY} small/></td>
+                <td style={{padding:"10px 12px",maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(pq.libelle_fr||pq.libelle_en||"").substring(0,70)}</td>
+                <td style={{padding:"10px 12px"}}><Badge text={pq.priorite} color={PRIO_COL[pq.priorite]} small/></td>
+                <td style={{padding:"10px 12px"}}><Badge text={(pq.statut_readiness||"NON_TRAITE").replace(/_/g," ")} color={STAT_COL[pq.statut_readiness||"NON_TRAITE"]} small/></td>
+                <td style={{padding:"10px 12px",minWidth:90}}><ScoreBar score={parseFloat(pq.score_global||0)} h={6}/></td>
+                <td style={{padding:"10px 12px"}}>{pq.niveau_risque&&<Badge text={pq.niveau_risque} color={RISK_COL[pq.niveau_risque]} small/>}</td>
+                <td style={{padding:"10px 12px",textAlign:"center"}}>{pq.nb_preuves||0}</td>
+                <td style={{padding:"10px 12px",textAlign:"center",color:(pq.nb_findings_ouverts||0)>0?"#DC2626":"#16A34A"}}>{pq.nb_findings_ouverts||0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {pqs.length===0&&<div style={{padding:40,textAlign:"center",color:"#9CA3AF"}}>Aucun PQ</div>}
+      </div>
+    </div>
+  );
+}
+
+// ═══ FICHE PQ ═══
+function FichePQ({pq,mReg,mProc,prvs,pqP,finds,caps,interps,db,reload,setModal}){
+  const [at,setAt]=useState("overview");
+  const pmr=mReg.filter(m=>m.pq_id===pq.id);
+  const pmp=mProc.filter(m=>m.pq_id===pq.id);
+  const ppp=pqP.filter(pp=>pp.pq_id===pq.id).map(pp=>({...pp,prv:prvs.find(p=>p.id===pp.preuve_id)})).filter(pp=>pp.prv);
+  const pf=finds.filter(f=>f.pq_id===pq.id);
+  const pc=caps.filter(c=>pf.some(f=>f.id===c.finding_id));
+  const interp=interps.find(i=>i.pq_id===pq.id);
+  const al=pq.alertes?typeof pq.alertes==="string"?JSON.parse(pq.alertes):pq.alertes:[];
+  const tabs=[{id:"overview",l:"Vue d'ensemble",ic:"eye"},{id:"reg",l:"Reglementaire",ic:"book-open",n:pmr.length},{id:"proc",l:"Procedural",ic:"clipboard",n:pmp.length},{id:"preuves",l:"Preuves",ic:"folder-open",n:ppp.length},{id:"findings",l:"Findings",ic:"alert-triangle",n:pf.length},{id:"capa",l:"CAPA",ic:"target",n:pc.length},{id:"strat",l:"Strategie",ic:"award"}];
+
+  const addMR=()=>{
+    const F=()=>{
+      const [d,sD]=useState({texte_ref:"",texte_titre:"",articles_couverts:"",niveau_couverture:"TOTALE",commentaire_gap:"",efod_ref:"",statut_validation:"BROUILLON"});
+      const [sv,sSv]=useState(false);
+      const save=async()=>{sSv(true);try{await db.from("pq_mapping_reglementaire").insert({...d,pq_id:pq.id});setModal(null);await reload();}catch(e){alert(e.message);}finally{sSv(false);}};
+      return(<div>
+        <Field label="Reference texte" req><input style={iS} value={d.texte_ref} onChange={e=>sD(x=>({...x,texte_ref:e.target.value}))} placeholder="Loi n°59-76, Decret..."/></Field>
+        <Field label="Titre" req><input style={iS} value={d.texte_titre} onChange={e=>sD(x=>({...x,texte_titre:e.target.value}))}/></Field>
+        <Field label="Articles couverts" req><input style={iS} value={d.articles_couverts} onChange={e=>sD(x=>({...x,articles_couverts:e.target.value}))} placeholder="Art. 12, Art. 15 al. 2"/></Field>
+        <Field label="Couverture"><select style={sS} value={d.niveau_couverture} onChange={e=>sD(x=>({...x,niveau_couverture:e.target.value}))}><option value="TOTALE">TOTALE</option><option value="PARTIELLE">PARTIELLE</option><option value="ABSENTE">ABSENTE</option></select></Field>
+        {d.niveau_couverture!=="TOTALE"&&<Field label="Commentaire gap" req><textarea style={{...iS,minHeight:60}} value={d.commentaire_gap} onChange={e=>sD(x=>({...x,commentaire_gap:e.target.value}))}/></Field>}
+        <Field label="EFOD"><input style={iS} value={d.efod_ref} onChange={e=>sD(x=>({...x,efod_ref:e.target.value}))}/></Field>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}><button onClick={()=>setModal(null)} style={bS}>Annuler</button><button onClick={save} style={bP} disabled={sv||!d.texte_ref||!d.texte_titre}>{sv?"...":"Enregistrer"}</button></div>
+      </div>);
+    };
+    setModal({title:"Nouveau mapping reglementaire",content:<F/>});
+  };
+
+  const addMP=()=>{
+    const F=()=>{
+      const [d,sD]=useState({doc_type:"PROCEDURE",doc_reference:"",doc_titre:"",doc_version:"",doc_statut:"APPROUVE",sections_applicables:"",statut_validation:"BROUILLON"});
+      const [sv,sSv]=useState(false);
+      const save=async()=>{sSv(true);try{await db.from("pq_mapping_procedural").insert({...d,pq_id:pq.id});setModal(null);await reload();}catch(e){alert(e.message);}finally{sSv(false);}};
+      return(<div>
+        <Field label="Type"><select style={sS} value={d.doc_type} onChange={e=>sD(x=>({...x,doc_type:e.target.value}))}>{["PROCEDURE","GUIDE","CHECKLIST","FORMULAIRE","INSTRUCTION"].map(t=><option key={t} value={t}>{t}</option>)}</select></Field>
+        <Field label="Reference" req><input style={iS} value={d.doc_reference} onChange={e=>sD(x=>({...x,doc_reference:e.target.value}))}/></Field>
+        <Field label="Titre" req><input style={iS} value={d.doc_titre} onChange={e=>sD(x=>({...x,doc_titre:e.target.value}))}/></Field>
+        <Field label="Version"><input style={iS} value={d.doc_version} onChange={e=>sD(x=>({...x,doc_version:e.target.value}))}/></Field>
+        <Field label="Statut"><select style={sS} value={d.doc_statut} onChange={e=>sD(x=>({...x,doc_statut:e.target.value}))}>{["APPROUVE","EN_REVISION","PROJET","ABROGE"].map(s=><option key={s} value={s}>{s}</option>)}</select></Field>
+        <Field label="Sections"><input style={iS} value={d.sections_applicables} onChange={e=>sD(x=>({...x,sections_applicables:e.target.value}))}/></Field>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}><button onClick={()=>setModal(null)} style={bS}>Annuler</button><button onClick={save} style={bP} disabled={sv||!d.doc_reference||!d.doc_titre}>{sv?"...":"Enregistrer"}</button></div>
+      </div>);
+    };
+    setModal({title:"Nouveau mapping procedural",content:<F/>});
+  };
+
+  const addPrv=()=>{
+    const F=()=>{
+      const [d,sD]=useState({code_preuve:`PRV-PEL-${String(Date.now()).slice(-4)}`,titre:"",type_preuve:"DOC_REGLEMENTAIRE",date_document:new Date().toISOString().split("T")[0],is_surveillance:false,role_preuve:"PRINCIPALE"});
+      const [sv,sSv]=useState(false);
+      const save=async()=>{sSv(true);try{
+        const uid="00000000-0000-0000-0000-000000000000";
+        const[prv]=await db.from("preuves").insert({code_preuve:d.code_preuve,titre:d.titre,type_preuve:d.type_preuve,date_document:d.date_document,is_surveillance:d.is_surveillance,deposee_par:uid});
+        if(prv?.id)await db.from("pq_preuves").insert({pq_id:pq.id,preuve_id:prv.id,role_preuve:d.role_preuve});
+        setModal(null);await reload();
+      }catch(e){alert(e.message);}finally{sSv(false);}};
+      return(<div>
+        <Field label="Code" req><input style={iS} value={d.code_preuve} onChange={e=>sD(x=>({...x,code_preuve:e.target.value}))}/></Field>
+        <Field label="Titre" req><input style={iS} value={d.titre} onChange={e=>sD(x=>({...x,titre:e.target.value}))}/></Field>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Type"><select style={sS} value={d.type_preuve} onChange={e=>sD(x=>({...x,type_preuve:e.target.value}))}>{["DOC_REGLEMENTAIRE","RAPPORT_INSPECTION","PV","REGISTRE","ECHANTILLON","CAPTURE","CORRESPONDANCE","CERTIFICAT","AUTRE"].map(t=><option key={t} value={t}>{t}</option>)}</select></Field>
+          <Field label="Role"><select style={sS} value={d.role_preuve} onChange={e=>sD(x=>({...x,role_preuve:e.target.value}))}>{["PRINCIPALE","COMPLEMENTAIRE","ECHANTILLON","SURVEILLANCE"].map(r=><option key={r} value={r}>{r}</option>)}</select></Field>
+        </div>
+        <Field label="Date"><input type="date" style={iS} value={d.date_document} onChange={e=>sD(x=>({...x,date_document:e.target.value}))}/></Field>
+        <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,cursor:"pointer",marginTop:8}}><input type="checkbox" checked={d.is_surveillance} onChange={e=>sD(x=>({...x,is_surveillance:e.target.checked}))}/> Preuve de surveillance</label>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}><button onClick={()=>setModal(null)} style={bS}>Annuler</button><button onClick={save} style={bP} disabled={sv||!d.titre}>{sv?"...":"Enregistrer"}</button></div>
+      </div>);
+    };
+    setModal({title:"Nouvelle preuve",content:<F/>});
+  };
+
+  const addFnd=()=>{
+    const F=()=>{
+      const [d,sD]=useState({code_finding:`FND-PEL-${String(Date.now()).slice(-4)}`,type_finding:"GAP_REGLEMENTAIRE",severite:"MAJEUR",description:"",source_detection:"REVUE_INTERNE"});
+      const [sv,sSv]=useState(false);
+      const save=async()=>{sSv(true);try{
+        const uid="00000000-0000-0000-0000-000000000000";
+        await db.from("findings").insert({...d,pq_id:pq.id,ce_concerne:pq.ce_principal,detecte_par:uid,responsable:uid});
+        setModal(null);await reload();
+      }catch(e){alert(e.message);}finally{sSv(false);}};
+      return(<div>
+        <Field label="Code" req><input style={iS} value={d.code_finding} onChange={e=>sD(x=>({...x,code_finding:e.target.value}))}/></Field>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <Field label="Type"><select style={sS} value={d.type_finding} onChange={e=>sD(x=>({...x,type_finding:e.target.value}))}>{["GAP_REGLEMENTAIRE","GAP_PROCEDURAL","GAP_IMPLEMENTATION","GAP_SURVEILLANCE","INCOHERENCE"].map(t=><option key={t} value={t}>{t.replace(/_/g," ")}</option>)}</select></Field>
+          <Field label="Severite"><select style={sS} value={d.severite} onChange={e=>sD(x=>({...x,severite:e.target.value}))}>{["BLOQUANT","MAJEUR","MINEUR","OBSERVATION"].map(s=><option key={s} value={s}>{s}</option>)}</select></Field>
+        </div>
+        <Field label="Description" req><textarea style={{...iS,minHeight:80}} value={d.description} onChange={e=>sD(x=>({...x,description:e.target.value}))}/></Field>
+        <Field label="Source"><select style={sS} value={d.source_detection} onChange={e=>sD(x=>({...x,source_detection:e.target.value}))}>{["REVUE_INTERNE","PRE_AUDIT","MOCK_AUDIT","AUTO_EVALUATION","CONTROLE_AUTO"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}</select></Field>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}><button onClick={()=>setModal(null)} style={bS}>Annuler</button><button onClick={save} style={bP} disabled={sv||!d.description}>{sv?"...":"Enregistrer"}</button></div>
+      </div>);
+    };
+    setModal({title:"Nouveau finding",content:<F/>});
+  };
+
+  return(
+    <div>
+      {/* Header */}
+      <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20,marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div style={{flex:1}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+              <Badge text={pq.ce_principal} color={NAVY}/><Badge text={pq.priorite} color={PRIO_COL[pq.priorite]}/><Badge text={(pq.statut_readiness||"NON_TRAITE").replace(/_/g," ")} color={STAT_COL[pq.statut_readiness||"NON_TRAITE"]}/>{pq.niveau_risque&&<Badge text={`Risque ${pq.niveau_risque}`} color={RISK_COL[pq.niveau_risque]}/>}
+            </div>
+            <p style={{margin:"8px 0 4px",fontSize:12,color:"#6B7280",lineHeight:1.5}}>{pq.libelle_en}</p>
+            {pq.libelle_fr&&<p style={{margin:"4px 0 0",fontSize:12,color:NAVY,fontStyle:"italic",lineHeight:1.5}}>{pq.libelle_fr}</p>}
+          </div>
+          <div style={{textAlign:"center",minWidth:100}}>
+            <div style={{fontSize:36,fontWeight:800,color:(pq.score_global||0)>=70?"#16A34A":(pq.score_global||0)>=50?"#CA8A04":"#DC2626"}}>{pq.score_global?.toFixed?.(1)??"0.0"}</div>
+            <div style={{fontSize:10,color:"#9CA3AF",textTransform:"uppercase"}}>Score Global</div>
+          </div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginTop:16,padding:12,background:"#F9FAFB",borderRadius:6}}>
+          {[{l:"Base legale",s:pq.score_base_legale,w:"30%"},{l:"Procedure",s:pq.score_procedure,w:"20%"},{l:"Implementation",s:pq.score_implementation,w:"20%"},{l:"Surveillance",s:pq.score_surveillance,w:"20%"},{l:"Tracabilite",s:pq.score_tracabilite,w:"10%"}].map(c=>(<div key={c.l} style={{textAlign:"center"}}><div style={{fontSize:10,color:"#6B7280",marginBottom:4}}>{c.l} ({c.w})</div><ScoreBar score={parseFloat(c.s||0)} h={6}/></div>))}
+        </div>
+        {al.length>0&&<div style={{marginTop:12,padding:10,background:"#FEF2F2",borderRadius:6,border:"1px solid #FEE2E2"}}><div style={{fontSize:11,fontWeight:600,color:"#DC2626",marginBottom:4}}>Alertes :</div>{al.map((a,i)=><div key={i} style={{fontSize:11,color:"#991B1B"}}>{a.code} — {a.msg}</div>)}</div>}
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:2,marginBottom:16,background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:4,flexWrap:"wrap"}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setAt(t.id)} style={{padding:"8px 12px",borderRadius:6,border:"none",cursor:"pointer",background:at===t.id?NAVY:"transparent",color:at===t.id?"white":"#6B7280",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,transition:"all .15s"}}>
+            <Icon name={t.ic} size={14} color={at===t.id?"white":"#6B7280"}/> {t.l}
+            {t.n!==undefined&&<span style={{background:at===t.id?"rgba(255,255,255,.2)":"#E5E7EB",padding:"0 6px",borderRadius:10,fontSize:10}}>{t.n}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:20}}>
+        {at==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+          <div><h4 style={{color:NAVY,fontSize:13,fontWeight:700,marginBottom:8}}>Informations</h4><div style={{fontSize:12,lineHeight:2}}><div><strong>SARPs :</strong> {(pq.sarps_refs||[]).join(", ")||"—"}</div><div><strong>PANS :</strong> {(pq.pans_refs||[]).join(", ")||"—"}</div><div><strong>Mappings reg. :</strong> {pq.nb_mappings_reg||0}</div><div><strong>Mappings proc. :</strong> {pq.nb_mappings_proc||0}</div></div></div>
+          <div><h4 style={{color:NAVY,fontSize:13,fontWeight:700,marginBottom:8}}>Etat</h4><div style={{fontSize:12,lineHeight:2}}><div><strong>Preuves :</strong> {pq.nb_preuves||0}</div><div><strong>Findings :</strong> {pq.nb_findings_ouverts||0}</div><div><strong>CAPA retard :</strong> {pq.nb_capa_retard||0}</div></div></div>
+        </div>}
+
+        {at==="reg"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h4 style={{margin:0,color:NAVY,fontSize:13,fontWeight:700}}>Mappings ({pmr.length})</h4><button onClick={addMR} style={{...bP,padding:"6px 14px"}}><Icon name="plus" size={14} color="white"/> Ajouter</button></div>
+          {pmr.map(m=><div key={m.id} style={{padding:14,border:"1px solid #E5E7EB",borderRadius:6,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:NAVY}}>{m.texte_ref}</span><div style={{display:"flex",gap:6}}><Badge text={m.niveau_couverture} color={m.niveau_couverture==="TOTALE"?"#16A34A":m.niveau_couverture==="PARTIELLE"?"#CA8A04":"#DC2626"} small/><Badge text={m.statut_validation} color={m.statut_validation==="VALIDE"?"#16A34A":"#6B7280"} small/></div></div>
+            <div style={{fontSize:12}}>{m.texte_titre}</div><div style={{fontSize:11,color:"#6B7280",marginTop:4}}>Articles : {m.articles_couverts||"—"}</div>
+            {m.commentaire_gap&&<div style={{fontSize:11,color:"#CA8A04",marginTop:4}}>Gap : {m.commentaire_gap}</div>}
+          </div>)}
+          {pmr.length===0&&<div style={{padding:30,textAlign:"center",color:"#DC2626"}}>Aucun mapping — Alerte RQ-01</div>}
+        </div>}
+
+        {at==="proc"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h4 style={{margin:0,color:NAVY,fontSize:13,fontWeight:700}}>Procedures ({pmp.length})</h4><button onClick={addMP} style={{...bP,padding:"6px 14px"}}><Icon name="plus" size={14} color="white"/> Ajouter</button></div>
+          {pmp.map(m=><div key={m.id} style={{padding:14,border:"1px solid #E5E7EB",borderRadius:6,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:NAVY}}>{m.doc_reference}</span><div style={{display:"flex",gap:6}}><Badge text={m.doc_type} color={NAVY} small/><Badge text={m.doc_statut} color={m.doc_statut==="APPROUVE"?"#16A34A":"#CA8A04"} small/></div></div>
+            <div style={{fontSize:12}}>{m.doc_titre}</div>
+          </div>)}
+          {pmp.length===0&&<div style={{padding:30,textAlign:"center",color:"#DC2626"}}>Aucune procedure — Alerte RQ-05</div>}
+        </div>}
+
+        {at==="preuves"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h4 style={{margin:0,color:NAVY,fontSize:13,fontWeight:700}}>Preuves ({ppp.length})</h4><button onClick={addPrv} style={{...bP,padding:"6px 14px"}}><Icon name="plus" size={14} color="white"/> Ajouter</button></div>
+          {ppp.map(pp=><div key={pp.id} style={{padding:14,border:"1px solid #E5E7EB",borderRadius:6,marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div><div style={{display:"flex",gap:8,marginBottom:4}}><span style={{fontSize:12,fontWeight:700,color:NAVY}}>{pp.prv?.code_preuve}</span><Badge text={pp.role_preuve} color={pp.role_preuve==="SURVEILLANCE"?"#8B5CF6":NAVY} small/></div><div style={{fontSize:12}}>{pp.prv?.titre}</div><div style={{fontSize:11,color:"#6B7280",marginTop:2}}>{pp.prv?.type_preuve} — {pp.prv?.date_document}</div></div>
+            <Badge text={pp.prv?.statut} color={pp.prv?.statut==="VALIDEE"?"#16A34A":pp.prv?.statut==="EXPIREE"?"#DC2626":"#CA8A04"}/>
+          </div>)}
+          {ppp.length===0&&<div style={{padding:30,textAlign:"center",color:"#DC2626"}}>Aucune preuve — Alerte RQ-07</div>}
+        </div>}
+
+        {at==="findings"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h4 style={{margin:0,color:NAVY,fontSize:13,fontWeight:700}}>Findings ({pf.length})</h4><button onClick={addFnd} style={{...bP,padding:"6px 14px"}}><Icon name="plus" size={14} color="white"/> Nouveau</button></div>
+          {pf.map(f=><div key={f.id} style={{padding:14,border:"1px solid #E5E7EB",borderRadius:6,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:NAVY}}>{f.code_finding}</span><div style={{display:"flex",gap:6}}><Badge text={f.severite} color={SEV_COL[f.severite]} small/><Badge text={f.statut} color={f.statut==="CLOS"?"#16A34A":f.statut==="OUVERT"?"#DC2626":"#CA8A04"} small/></div></div>
+            <div style={{fontSize:12}}>{f.description}</div><div style={{fontSize:11,color:"#6B7280",marginTop:4}}>{f.detecte_le} — {f.source_detection}</div>
+          </div>)}
+          {pf.length===0&&<div style={{padding:30,textAlign:"center",color:"#9CA3AF"}}>Aucun finding</div>}
+        </div>}
+
+        {at==="capa"&&<div>
+          <h4 style={{margin:"0 0 16px",color:NAVY,fontSize:13,fontWeight:700}}>CAPA ({pc.length})</h4>
+          {pc.map(c=><div key={c.id} style={{padding:14,border:"1px solid #E5E7EB",borderRadius:6,marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:NAVY}}>{c.code_capa}</span><Badge text={c.statut} color={c.statut==="CLOS"||c.statut==="VALIDE"?"#16A34A":c.statut==="EN_RETARD"?"#DC2626":"#CA8A04"} small/></div>
+            <div style={{fontSize:12}}><strong>Action :</strong> {c.action_structurelle}</div><div style={{fontSize:11,color:"#6B7280",marginTop:4}}>Echeance : {c.echeance}</div>
+          </div>)}
+          {pc.length===0&&<div style={{padding:30,textAlign:"center",color:"#9CA3AF"}}>Aucun CAPA</div>}
+        </div>}
+
+        {at==="strat"&&<div style={{fontSize:12,lineHeight:1.8,color:"#374151"}}>
+          <div style={{marginBottom:12}}><strong>Interpretation :</strong><br/>{interp?.interpretation_fr||"Non renseignee"}</div>
+          <div style={{marginBottom:12}}><strong>Points d'attention :</strong><br/>{interp?.points_attention||"—"}</div>
+          <div style={{marginBottom:12}}><strong>Strategie :</strong><br/>{interp?.strategie_reponse||"—"}</div>
+          <div><strong>Mots-cles :</strong> {(interp?.keywords_audit||[]).join(", ")||"—"}</div>
+        </div>}
+      </div>
+    </div>
+  );
+}
+
+// ═══ INSPECTEURS ═══
+function InspecteursView({insps,forms,db,reload,setModal}){
+  const addI=()=>{
+    const F=()=>{
+      const [d,sD]=useState({nom_complet:"",matricule:"",fonction:"INSPECTEUR",domaines_designation:"PEL",date_designation:new Date().toISOString().split("T")[0]});
+      const [sv,sSv]=useState(false);
+      const save=async()=>{sSv(true);try{await db.from("inspecteurs").insert({...d,domaines_designation:`{${d.domaines_designation}}`});setModal(null);await reload();}catch(e){alert(e.message);}finally{sSv(false);}};
+      return(<div>
+        <Field label="Nom" req><input style={iS} value={d.nom_complet} onChange={e=>sD(x=>({...x,nom_complet:e.target.value}))}/></Field>
+        <Field label="Matricule" req><input style={iS} value={d.matricule} onChange={e=>sD(x=>({...x,matricule:e.target.value}))}/></Field>
+        <Field label="Fonction"><select style={sS} value={d.fonction} onChange={e=>sD(x=>({...x,fonction:e.target.value}))}>{["INSPECTEUR","EXAMINATEUR","INSPECTEUR_EN_CHEF"].map(f=><option key={f} value={f}>{f}</option>)}</select></Field>
+        <Field label="Domaines"><input style={iS} value={d.domaines_designation} onChange={e=>sD(x=>({...x,domaines_designation:e.target.value}))}/></Field>
+        <Field label="Date designation"><input type="date" style={iS} value={d.date_designation} onChange={e=>sD(x=>({...x,date_designation:e.target.value}))}/></Field>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:16}}><button onClick={()=>setModal(null)} style={bS}>Annuler</button><button onClick={save} style={bP} disabled={sv||!d.nom_complet||!d.matricule}>{sv?"...":"Enregistrer"}</button></div>
+      </div>);
+    };
+    setModal({title:"Nouvel inspecteur",content:<F/>});
+  };
+  return(<div>
+    <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><span style={{fontSize:13,color:"#6B7280"}}>{insps.length} inspecteur(s)</span><button onClick={addI} style={{...bP,padding:"8px 16px"}}><Icon name="plus" size={14} color="white"/> Ajouter</button></div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:14}}>
+      {insps.map(i=>{const fi=forms.filter(f=>f.inspecteur_id===i.id);return(
+        <div key={i.id} style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:16}}>
+          <div style={{display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:14,fontWeight:700,color:NAVY}}>{i.nom_complet}</div><div style={{fontSize:12,color:"#6B7280"}}>{i.matricule} — {i.fonction}</div></div><Badge text={i.actif?"ACTIF":"INACTIF"} color={i.actif?"#16A34A":"#DC2626"} small/></div>
+          <div style={{marginTop:10,fontSize:11,color:"#374151",lineHeight:1.8}}><div>Domaines : {(i.domaines_designation||[]).join(", ")}</div><div>Designation : {i.date_designation}</div><div>Formations : {fi.length}</div></div>
+        </div>
+      );})}
+    </div>
+    {insps.length===0&&<div style={{padding:60,textAlign:"center",color:"#DC2626",background:"white",borderRadius:8,border:"1px solid #E5E7EB"}}>Aucun inspecteur — Alerte RQ-16</div>}
+  </div>);
+}
+
+// ═══ SETTINGS ═══
+function SettingsView({config,setConfig}){
+  return(<div style={{maxWidth:600}}>
+    <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:24,marginBottom:16}}>
+      <h3 style={{margin:"0 0 16px",fontSize:14,color:NAVY,fontWeight:700}}>Connexion Supabase</h3>
+      <div style={{fontSize:12,lineHeight:1.8}}><div><strong>URL :</strong> {config.url}</div><div><strong>Cle :</strong> {config.key?.substring(0,20)}...</div></div>
+      <button onClick={()=>{localStorage.removeItem('pel_config');setConfig(null);}} style={{background:"#DC2626",color:"white",border:"none",borderRadius:6,padding:"8px 18px",fontSize:13,fontWeight:600,cursor:"pointer",marginTop:16}}>Deconnecter</button>
+    </div>
+    <div style={{background:"white",borderRadius:8,border:"1px solid #E5E7EB",padding:24}}>
+      <h3 style={{margin:"0 0 12px",fontSize:14,color:NAVY,fontWeight:700}}>Deploiement</h3>
+      <div style={{fontSize:12,lineHeight:2}}>
+        <p><strong>1.</strong> Creer un projet Supabase</p>
+        <p><strong>2.</strong> Executer supabase_schema.sql</p>
+        <p><strong>3.</strong> Deployer index.html sur GitHub Pages</p>
+        <p><strong>4.</strong> Connecter avec URL + cle anon</p>
+      </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.render(<App/>,document.getElementById("root"));
+</script>
+</body>
+</html>
